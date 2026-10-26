@@ -1,10 +1,10 @@
 {
-  "name": "dsh-vscode-panel",
-  "displayName": "DSH",
-  "description": "在 VS Code 侧边栏中使用 DeepSeek Harness（DSH）网页界面",
-  "version": "0.4.3",
+  "name": "dsh-native-panel",
+  "displayName": "DSH Native — 真实界面 + 原生 diff",
+  "description": "在 VS Code 里跑真实的 DeepSeek Harness 页面，并把每轮文件改动映射成 VS Code 原生并排 diff。",
+  "version": "0.3.0",
   "l10n": "./l10n",
-  "publisher": "Fengze233",
+  "publisher": "cbcy",
   "icon": "assets/icon.png",
   "license": "MIT",
   "engines": {
@@ -32,17 +32,13 @@
     "onCommand:dsh.bridge.retry",
     "onCommand:dsh.bridge.uninstall",
     "onCommand:dsh.cleanupImageCache",
-    "onCommand:dsh.copyLogs"
+    "onCommand:dsh.copyLogs",
+    "onCommand:dsh.nativeDiff.openLatest",
+    "onCommand:dsh.addSelection",
+    "onCommand:dsh.addFile"
   ],
   "contributes": {
     "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "dsh",
-          "title": "%dsh.container.title%",
-          "icon": "assets/whale-icon.svg"
-        }
-      ],
       "secondarySidebar": [
         {
           "id": "dsh-secondary",
@@ -52,13 +48,6 @@
       ]
     },
     "views": {
-      "dsh": [
-        {
-          "id": "dsh.panel",
-          "name": "%dsh.view.panel.name%",
-          "type": "webview"
-        }
-      ],
       "dsh-secondary": [
         {
           "id": "dsh.panel.secondary",
@@ -145,6 +134,24 @@
         "command": "dsh.openFromTitle",
         "title": "%dsh.cmd.openFromTitle.title%",
         "icon": "assets/whale-icon-bg.svg"
+      },
+      {
+        "command": "dsh.nativeDiff.openLatest",
+        "title": "打开本轮改动 diff",
+        "category": "DSH",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "dsh.addSelection",
+        "title": "添加选区到 DSH",
+        "category": "DSH",
+        "icon": "$(add)"
+      },
+      {
+        "command": "dsh.addFile",
+        "title": "添加文件到 DSH",
+        "category": "DSH",
+        "icon": "$(add)"
       }
     ],
     "menus": {
@@ -180,6 +187,32 @@
           "command": "dsh.showLogs",
           "when": "view == dsh.panel || view == dsh.panel.secondary",
           "group": "navigation@5"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "dsh.addSelection",
+          "when": "editorHasSelection",
+          "group": "1_modification@91"
+        },
+        {
+          "command": "dsh.addFile",
+          "when": "resourceScheme == file",
+          "group": "1_modification@92"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "dsh.addFile",
+          "when": "resourceScheme == file",
+          "group": "navigation@91"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "dsh.addFile",
+          "when": "resourceScheme == file",
+          "group": "navigation@91"
         }
       ]
     },

@@ -72,6 +72,19 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
     manager.onChange(() => void this.handleStateChange());
   }
 
+  /** 下发自动上下文（活动文件/选区），桥接会在发送时附加到 prompt */
+  setIdeContext(context: string): void {
+    if (this.view === null) return;
+    void this.view.webview.postMessage({ type: 'bridgeSetIdeContext', context });
+  }
+
+  /** 把文本注入 DSH 输入框（选区/文件上下文）：面板未打开时返回 false */
+  insertText(text: string): boolean {
+    if (this.view === null) return false;
+    void this.view.webview.postMessage({ type: 'bridgeInsertText', text });
+    return true;
+  }
+
   /** 强制按最新状态重渲染（会话兑换完成/代理就绪后由扩展调用，弥补 onChange 之外的触发源） */
   refresh(): void {
     void this.handleStateChange();

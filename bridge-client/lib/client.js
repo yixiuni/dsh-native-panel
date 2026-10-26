@@ -23,8 +23,10 @@ window.__ModuleLoader__.load({
     console.log("[dsh-vscode-bridge] client.js executed");
     // —— 握手状态 ——
     let bridgeToken = ""; // 父页面下发的握手 token；未握手前为空，不激活任何拦截
+    // VS Code 活动文件/选区上下文（扩展侧随选区变化下发；发送时作为 <ide_context> 附加）
+    let ideContext = "";
     // 桥接包版本（与插件版本统一，随包发布；安装器按「版本不一致或 client.js 内容不一致」强制重装）
-    const BRIDGE_VERSION = "0.4.3";
+    const BRIDGE_VERSION = "0.4.5";
 
     // —— 剪贴板写桥接：VS Code webview 对跨源 iframe 的 navigator.clipboard.writeText 有权限拦截 ——
     // 背景：即使 iframe 声明 allow="clipboard-write"，VS Code（Electron）仍会拒绝写入
@@ -506,6 +508,47 @@ window.__ModuleLoader__.load({
       showMenuAt(e.clientX, e.clientY);
     }
 
+    // —— 编辑器上下文注入：把扩展侧传来的选区/文件文本写进 DSH 的 Lexical 输入框 ——
+    function insertIntoComposer(text) {
+      const editor = document.querySelector('[data-lexical-editor="true"]')
+        || document.querySelector('[contenteditable="true"]');
+      if (!editor) {
+        console.warn("[dsh-vscode-bridge] insertText: composer not found");
+        return;
+      }
+      editor.focus();
+      try {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      } catch {}
+      let inserted = false;
+      try {
+        inserted = document.execCommand('insertText', false, text);
+      } catch {
+        inserted = false;
+      }
+      if (!inserted) {
+        try {
+          const data = new DataTransfer();
+          data.setData('text/plain', text);
+          editor.dispatchEvent(new ClipboardEvent('paste', {
+            clipboardData: data,
+            bubbles: true,
+            cancelable: true,
+          }));
+          inserted = true;
+        } catch {}
+      }
+      if (inserted) {
+        try { editor.scrollIntoView({ block: 'nearest' }); } catch {}
+        parent.postMessage({ kind: 'insertTextAck', ok: true }, '*');
+      }
+    }
+
     // —— 接收父页面消息：握手 + 剪贴板回执 ——
     function onParentMessage(e) {
       const d = e.data;
@@ -522,6 +565,16 @@ window.__ModuleLoader__.load({
         // 校验消息来源，按 { kind: 'bridgeAck', ok } 解析，避免同 kind 两种形状。
         // 回执携带桥接版本：扩展侧日志据此直接确认页面里跑的是哪个版本的桥接代码
         parent.postMessage(buildSyncWorkspaceAck(true, undefined, BRIDGE_VERSION), "*");
+        return;
+      }
+      // 自动上下文：扩展侧随活动文件/选区变化下发，下次发送时附加到 prompt
+      if (d.kind === "setIdeContext" && d.token === bridgeToken && typeof d.context === "string") {
+        ideContext = d.context;
+        return;
+      }
+      // 编辑器上下文注入（扩展命令「添加选区/文件到 DSH」）
+      if (d.kind === "insertText" && typeof d.text === "string" && d.token === bridgeToken) {
+        insertIntoComposer(d.text);
         return;
       }
       // 剪贴板写回执：resolve / reject 对应的 writeText Promise
@@ -728,6 +781,23 @@ window.__ModuleLoader__.load({
     function interceptPromptFetch() {
       const origFetch = window.fetch.bind(window);
       window.fetch = async (input, init) => {
+        // 发送前把 VS Code 的活动文件/选区作为 <ide_context> 附加到 prompt（Codex 式自动上下文）
+        if (bridgeToken !== "" && ideContext !== "" && init && init.method === "POST" && typeof init.body === "string" && init.body !== "") {
+          try {
+            const parsed = JSON.parse(init.body);
+            if (normalizeRpcMethod(parsed && parsed.method) === "session.prompt") {
+              const payload = unwrapRpcRequest(parsed);
+              if (payload && Array.isArray(payload.content)) {
+                const marker = "<ide_context>";
+                const already = payload.content.some((part) => part && part.type === "text" && typeof part.text === "string" && part.text.includes(marker));
+                if (!already) {
+                  payload.content.push({ type: "text", text: "\n\n" + marker + "\n" + ideContext + "\n</ide_context>" });
+                  init = { ...init, body: JSON.stringify(parsed) };
+                }
+              }
+            }
+          } catch {}
+        }
         const res = await origFetch(input, init);
         try {
           if (!imageFallbackEnabled || bridgeToken === "") return res;

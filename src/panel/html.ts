@@ -163,6 +163,16 @@ if (iframeEl) {
       iframeEl.contentWindow.postMessage({ kind: 'deleteImagesAck', requestId: d.requestId, ok: d.ok }, '*');
       return;
     }
+    // 自动上下文：活动文件/选区（发送时由桥接附加到 prompt）
+    if (d && d.type === 'bridgeSetIdeContext' && typeof d.context === 'string') {
+      iframeEl.contentWindow.postMessage({ kind: 'setIdeContext', context: d.context, token: TOKEN }, '*');
+      return;
+    }
+    // 编辑器上下文注入：扩展命令把选区/文件文本下发给 DSH 输入框
+    if (d && d.type === 'bridgeInsertText' && typeof d.text === 'string') {
+      iframeEl.contentWindow.postMessage({ kind: 'insertText', text: d.text, token: TOKEN }, '*');
+      return;
+    }
     // —— 上行：iframe 发来的消息，source + origin 双重校验 ——
     if (e.source !== iframeEl.contentWindow || !isAllowedBridgeOrigin(e.origin)) return;
     // 握手回执：统一形状 { kind:'bridgeAck', ok }（不带 token 字段），只读 ok

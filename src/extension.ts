@@ -12,6 +12,7 @@ import { ServiceManager, type ManagerOptions } from './service/manager';
 import { DshPanelProvider } from './panel/provider';
 import { StatusBarController } from './statusbar';
 import { resolveWorkspaceRoot } from './workspaceRoot';
+import { registerNativeDiff } from './nativeDiff';
 import { createUrlResolver, handshakeTimeoutMs, bridgeEvalDelayMs, classifyRemote, toLocalhostUrl } from './remote';
 import { createDshProxy, type DshProxy } from './service/proxy';
 import {
@@ -313,6 +314,7 @@ export function activate(context: vscode.ExtensionContext): void {
     appendLog(`[bridge] handshake ${ok ? 'ok' : 'failed'}${version ? ` (bridge v${version})` : ''}`);
     handshakeOk = ok;
     clearHandshakeTimer();
+    if (ok) scheduleIdeContextSync();
   }
 
   /** 任一面板首次打开：标记已打开并尝试启动握手超时（幂等，不重复建定时器） */
@@ -417,6 +419,80 @@ export function activate(context: vscode.ExtensionContext): void {
   /** 让两个面板按最新状态重渲染（会话/代理变化时调用） */
   function refreshPanels(): void {
     for (const p of panels) p.refresh();
+  }
+
+  /** 当前编辑器上下文：活动文件 + 选区（过大时只给行号范围，避免每条消息烧 token） */
+  function currentIdeContext(): string {
+    const editor = vscode.window.activeTextEditor;
+    if (editor === undefined) return '';
+    const document = editor.document;
+    if (document.uri.scheme !== 'file') return '';
+    const relative = vscode.workspace.asRelativePath(document.uri, false);
+    const selection = editor.selection;
+    if (selection.isEmpty) return `活动文件：${relative}`;
+    const start = selection.start.line + 1;
+    const end = selection.end.line + 1;
+    const text = document.getText(selection);
+    if (text.length > 8000 || end - start > 200) {
+      return `活动文件：${relative}\n选区：第 ${start}-${end} 行`;
+    }
+    return `活动文件：${relative}\n选区（第 ${start}-${end} 行）：\n\u0060\u0060\u0060${document.languageId}\n${text}\n\u0060\u0060\u0060`;
+  }
+
+  /** 把自动上下文下发给页面（桥接在发送时附加到 prompt） */
+  function syncIdeContext(): void {
+    const text = currentIdeContext();
+    panelPrimary?.setIdeContext(text);
+    panelSecondary?.setIdeContext(text);
+  }
+
+  let ideContextTimer: NodeJS.Timeout | undefined;
+  /** 防抖：选区/活动编辑器变化后延迟同步，避免拖拽选择时刷消息 */
+  function scheduleIdeContextSync(): void {
+    if (ideContextTimer !== undefined) clearTimeout(ideContextTimer);
+    ideContextTimer = setTimeout(() => {
+      ideContextTimer = undefined;
+      syncIdeContext();
+    }, 250);
+  }
+
+  /** 把一段文本注入 DSH 输入框（面板未打开时提示） */
+  function insertIntoDsh(text: string): void {
+    // 只往右侧 panel.secondary 注入：主视图（活动栏）已不再贡献，避免内容跑到编辑器区的旧面板里
+    if (panelSecondary?.insertText(text) === true) return;
+    for (const p of panels) if (p !== panelPrimary && p.insertText(text)) return;
+    void vscode.window.showWarningMessage('DSH 面板还没打开：先点编辑器标题栏的鲸鱼图标打开右侧 DSH。');
+  }
+
+  /** 命令：把当前选区作为上下文插入 DSH 输入框 */
+  function addSelectionToDsh(): void {
+    const editor = vscode.window.activeTextEditor;
+    if (editor === undefined) {
+      void vscode.window.showInformationMessage('没有活动编辑器。');
+      return;
+    }
+    const selection = editor.selection;
+    if (selection.isEmpty) {
+      void vscode.window.showInformationMessage('先在编辑器里选中一段代码。');
+      return;
+    }
+    const document = editor.document;
+    const relative = vscode.workspace.asRelativePath(document.uri, false);
+    const start = selection.start.line + 1;
+    const end = selection.end.line + 1;
+    const block = `以下是 VS Code 里 ${relative} 第 ${start}-${end} 行的选区：\n\n\u0060\u0060\u0060${document.languageId}\n${document.getText(selection)}\n\u0060\u0060\u0060\n`;
+    insertIntoDsh(block);
+  }
+
+  /** 命令：把文件/目录引用插入 DSH 输入框（资源管理器、编辑器右键均可用） */
+  function addFileToDsh(uri?: unknown): void {
+    const target = uri instanceof vscode.Uri ? uri : vscode.window.activeTextEditor?.document.uri;
+    if (target === undefined) {
+      void vscode.window.showInformationMessage('没有可添加的文件。');
+      return;
+    }
+    const relative = vscode.workspace.asRelativePath(target, false);
+    insertIntoDsh(`请参考${target.fsPath.endsWith('/') ? '目录' : '文件'}：${relative}\n`);
   }
 
   /**
@@ -698,6 +774,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     // 第三参数：隐藏面板时保留 webview（iframe 不销毁、DSH 页面会话不丢）
+    vscode.window.onDidChangeTextEditorSelection(() => scheduleIdeContextSync()),
+    vscode.window.onDidChangeActiveTextEditor(() => scheduleIdeContextSync()),
     vscode.window.registerWebviewViewProvider('dsh.panel', panelPrimary, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
@@ -716,6 +794,17 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('dsh.bridge.retry', () => void retryBridge()),
     vscode.commands.registerCommand('dsh.bridge.uninstall', () => void uninstallBridgeCmd()),
     vscode.commands.registerCommand('dsh.cleanupImageCache', () => void cleanupImageCacheCmd()),
+    vscode.commands.registerCommand('dsh.addSelection', () => addSelectionToDsh()),
+    vscode.commands.registerCommand('dsh.addFile', (uri?: unknown) => addFileToDsh(uri)),
+    ...registerNativeDiff({
+      getBaseUrl: () =>
+        authProxyStarted && authSessionState === 'ok' && manager?.getSnapshot().state === 'ready'
+          ? (authProxy?.baseUrl ?? null)
+          : null,
+      workspaceRoot: () =>
+        resolveWorkspaceRoot(vscode.workspace.workspaceFolders ?? [], readConfig().config.workspaceRootIndex ?? 0),
+      log: appendLog,
+    }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       // 目标变化判定见 shouldResetHandshake 的注释（纯函数，单独单测）
       const changed = {
@@ -741,6 +830,8 @@ export function activate(context: vscode.ExtensionContext): void {
   // 激活后延迟评估一次桥接状态：degraded 且未静默时弹警告
   scheduleEvaluation();
 
+  scheduleIdeContextSync();
+
   // 启动时扫地清理：上次会话（VS Code 已重启/面板已销毁）可能遗留的"孤儿"图片降级临时文件——
   // 它们不在内存注册表里（重启即丢失），只能按工作区目录扫描删除（仅限 dsh-imgcache-* 白名单命名）。
   {
@@ -751,7 +842,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
 /** 打开面板：聚焦视图（VS Code 自动打开视图所在的侧边栏，左/右皆可） */
 async function openPanel(): Promise<void> {
-  await vscode.commands.executeCommand('dsh.panel.focus');
+  await vscode.commands.executeCommand('dsh.panel.secondary.focus');
 }
 
 /** 在外部浏览器打开 DSH 页面：DSH ≥0.1.2 时打开带一次性 token 的启动网址（浏览器首次访问完成登录） */
