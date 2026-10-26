@@ -409,10 +409,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Fengze233/dsh-vscode.git"
+    "url": "git+https://github.com/yixiuni/dsh-native-panel.git"
   },
-  "homepage": "https://github.com/Fengze233/dsh-vscode#readme",
+  "homepage": "https://github.com/yixiuni/dsh-native-panel#readme",
   "bugs": {
-    "url": "https://github.com/Fengze233/dsh-vscode/issues"
+    "url": "https://github.com/yixiuni/dsh-native-panel/issues"
   }
 }
